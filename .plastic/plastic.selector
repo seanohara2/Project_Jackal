@@ -1,4 +1,3 @@
 repository "Project_Jackal@CapstoneJackal@cloud"
   path "/"
-    br "/main"
-    co "/main"
+    smartbranch "/main"
