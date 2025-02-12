@@ -5,6 +5,8 @@ using System.IO;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.EventSystems;
+
 namespace DynamicPhotoCamera
 {
     /// Controls photo capture, management, and visualization functionality.
@@ -20,76 +22,59 @@ namespace DynamicPhotoCamera
         public PhotoUIManager uiManager;
         // Controls cursor camera movement
         public CursorCam pointerOnScreen;
+        // Controls cursor for controller users
+        public CursorManager cursorManager;
+
+        [Header("UI / Raycasting References")]
+        public GraphicRaycaster raycaster;      // Typically on your main Canvas
+        public EventSystem eventSystem;         // Standard Unity EventSystem in your scene
         #endregion
 
         #region Photo Settings
-        // Total number of stored sprites
         [HideInInspector] public int howManySprites;
-        // Temporary photocard reference
         private GameObject photocard;
-        // Photo prefab template
         [SerializeField] private GameObject photo;
-        // Current screenshot sprite
         private Sprite screenShotSprite;
-        // Full screenshot texture
         private Texture2D screenShot;
-        // Cropped screenshot texture
         private Texture2D croppedScreenshot;
-        // Render texture for capture
-        private RenderTexture targetTexture;           
+        private RenderTexture targetTexture;
         #endregion
 
         #region Capture Settings
         [Header("Capture Settings")]
-        /// The size of the cropped portion of the screenshot.
-        [Tooltip("Size of the square region cropped from the center of the screenshot in pixels.")]
         [Range(1, 500)]
         [SerializeField] private int cropSize = 100;
-
-        [Tooltip("Select the desired RenderTexture format.")]
         [SerializeField] private RenderTextureFormat renderTextureFormat = RenderTextureFormat.Default;
-
-        [Tooltip("Set the depth value for the RenderTexture.")]
         [SerializeField] private int depth = 24;
 
-        // Horizontal resolution of the screenshots captured in pixels.
         private int resWidth = 906;
-        // Vertical resolution of the screenshots captured in pixels.=
         private int resHeight = 419;
         public float sizeMini = 0.5f;
         public float sizeNormal = 0.7f;
         public float sizeMax = 1f;
 
-        // Position dot return state
         private bool returnDot;
         #endregion
 
         #region Photo Management
-        // Currently moving photo card
-        [HideInInspector] public PhotoPrefab movingCard;
-        // Stored card positions
+        [HideInInspector] public PhotoPrefab movingCard;   // Photo currently selected
         private List<Vector3> positionsCards;
-        // All photo card instances
         public List<PhotoPrefab> allCards;
-        // Card sequence order
         private List<int> subsequenceCards;
-        // Board X position
         private int boardX;
         #endregion
 
         #region State Variables
-        // Initialization state
         private bool initialReady;
-        // State adjustment value
         private float value;
+
+        // NEW: Track whether the cursor is locked or unlocked for UI interaction
+        private bool isCursorLocked = true;
         #endregion
 
         #region Constants
-        // Photo object reference
         private GameObject photocardObj;
-        // Current mouse position
         private Vector2 mousePosition;
-
         #endregion
 
         // Initializes system and loads saved photos
@@ -101,6 +86,7 @@ namespace DynamicPhotoCamera
 
             inputController.photoController = this;
             uiManager.photoController = this;
+            cursorManager = FindObjectOfType<CursorManager>(); // Reference to shared cursor manager
 
             if (!initialReady)
             {
@@ -113,8 +99,8 @@ namespace DynamicPhotoCamera
                 for (int i = 0; i < subsequenceCards.Count; i++)
                 {
                     photocard = Instantiate(photo, transform.position, transform.rotation, uiManager.photoHolder.transform);
-                    photocard.transform.rotation = new Quaternion(0, 0, 0, 0);
-                    photocard.transform.localPosition = new Vector3(0, 0, 0);
+                    photocard.transform.rotation = Quaternion.identity;
+                    photocard.transform.localPosition = Vector3.zero;
                     Sprite loadedSprite = LoadSpriteFromDisk("photo" + subsequenceCards[i]);
 
                     photocard.GetComponent<Image>().sprite = loadedSprite;
@@ -131,22 +117,86 @@ namespace DynamicPhotoCamera
                         script.photoController = this;
                     }
                 }
+
                 if (uiManager.photoHolder.transform.childCount > 0)
                 {
-                    uiManager.temporaltargetSquarePos = uiManager.photoHolder.transform.GetChild(uiManager.photoHolder.transform.childCount - 1).gameObject;
+                    uiManager.temporaltargetSquarePos =
+                        uiManager.photoHolder.transform.GetChild(uiManager.photoHolder.transform.childCount - 1).gameObject;
                 }
+
                 for (int i = 0; i < toTurnOff.Count; i++)
                 {
                     Destroy(toTurnOff[i].gameObject);
                 }
+
                 for (int i = 0; i < allCards.Count; i++)
                 {
                     allCards[i].TheStart();
                 }
+
                 SortPhotos();
                 ShufflePositions();
             }
+
             uiManager.CanPhotos();
+
+            // By default, lock the cursor at start (if desired).
+            LockCursor(true);
+        }
+
+        private void Update()
+        {
+            // 1) Toggle the cursor lock/unlock with the Tab key or Up D-Pad button:
+            if (Input.GetKeyDown(KeyCode.Tab) || Input.GetKeyDown(KeyCode.JoystickButton13))
+            {
+                isCursorLocked = !isCursorLocked;
+                cursorManager.Update();
+                LockCursor(isCursorLocked);
+            }
+
+            // 2) Check for Y button press to delete the 'movingCard'
+            if (Input.GetKeyDown(KeyCode.JoystickButton3)) // Y button on many controllers
+            {
+                TryDeleteMovingCard();
+            }
+        }
+
+        /// <summary>
+        /// Locks or unlocks the system cursor and visibility.
+        /// </summary>
+        private void LockCursor(bool shouldLock)
+        {
+            if (shouldLock)
+            {
+                Cursor.lockState = CursorLockMode.Locked;
+                cursorManager.HideCursor();
+                Cursor.visible = false;
+            }
+            else
+            {
+                Cursor.lockState = CursorLockMode.None;
+                cursorManager.ShowCursor();
+                Cursor.visible = true;
+            }
+        }
+
+        /// <summary>
+        /// Attempts to delete the currently selected (moving) card when Y is pressed.
+        /// </summary>
+        private void TryDeleteMovingCard()
+        {
+            if (movingCard != null)
+            {
+                Image movingCardImage = movingCard.GetComponent<Image>();
+                if (movingCardImage != null)
+                {
+                    DeleteIt(movingCardImage, movingCard);
+                }
+            }
+            else
+            {
+                Debug.Log("No photo is currently selected for deletion.");
+            }
         }
 
         // Loads sprite from storage
@@ -285,7 +335,8 @@ namespace DynamicPhotoCamera
 
                 string fileName = "photo" + howManySprites;
                 photocardObj = Instantiate(photo, transform.position, transform.rotation, uiManager.photoHolder.transform);
-                uiManager.temporaltargetSquarePos = uiManager.photoHolder.transform.GetChild(uiManager.photoHolder.transform.childCount - 1).gameObject;
+                uiManager.temporaltargetSquarePos =
+                    uiManager.photoHolder.transform.GetChild(uiManager.photoHolder.transform.childCount - 1).gameObject;
 
                 PhotoPrefab script = photocardObj.GetComponent<PhotoPrefab>();
                 script.thisNumberIndex = howManySprites;
@@ -314,7 +365,7 @@ namespace DynamicPhotoCamera
             finally
             {
                 if (targetTexture != null)
-                RenderTexture.ReleaseTemporary(targetTexture);
+                    RenderTexture.ReleaseTemporary(targetTexture);
             }
         }
 
